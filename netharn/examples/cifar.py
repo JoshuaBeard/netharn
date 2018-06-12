@@ -91,7 +91,7 @@ def train():
 
     batch_size = 128
     lr = 0.1
-    workers = 2
+    workers = int(ub.argval('--workers', default=2))
 
     xpu = nh.XPU.cast('argv')
 
@@ -214,6 +214,7 @@ def train():
 if __name__ == '__main__':
     r"""
     CommandLine:
+        python examples/cifar.py --gpu=0 --model=dpn92
         python examples/cifar.py --gpu=0 --model=densenet121
         python examples/cifar.py --gpu=0 --model=resnet50
     """
