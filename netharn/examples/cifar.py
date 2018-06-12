@@ -89,11 +89,12 @@ def train():
     torch.manual_seed(137852547 % 4294967295)
     random.seed(2497950049 % 4294967295)
 
-    lr = 0.1
     batch_size = int(ub.argval('--batch_size', default=128))
     workers = int(ub.argval('--workers', default=2))
-
+    model_key = ub.argval('--model', default='densenet121')
     xpu = nh.XPU.cast('argv')
+
+    lr = 0.1
 
     transform_train = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
@@ -134,8 +135,6 @@ def train():
 
     initializer_ = (nh.initializers.KaimingNormal, {'param': 0, 'mode': 'fan_in'})
     # initializer_ = (initializers.LSUV, {})
-
-    model_key = ub.argval('--model', default='densenet121')
 
     available_models = {
         'densenet121': (nh.models.densenet.DenseNet, {
@@ -214,8 +213,10 @@ def train():
 if __name__ == '__main__':
     r"""
     CommandLine:
-        python examples/cifar.py --gpu=0 --model=dpn92
         python examples/cifar.py --gpu=0 --model=densenet121
         python examples/cifar.py --gpu=0 --model=resnet50
+
+        # Train on two GPUs with a larger batch size
+        python examples/cifar.py --model=dpn92 --batch_size=256 --gpu=0,1
     """
     train()
