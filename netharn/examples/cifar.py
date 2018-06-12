@@ -89,8 +89,8 @@ def train():
     torch.manual_seed(137852547 % 4294967295)
     random.seed(2497950049 % 4294967295)
 
-    batch_size = 128
     lr = 0.1
+    batch_size = int(ub.argval('--batch_size', default=128))
     workers = int(ub.argval('--workers', default=2))
 
     xpu = nh.XPU.cast('argv')
