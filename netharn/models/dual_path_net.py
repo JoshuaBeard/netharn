@@ -46,12 +46,18 @@ class Bottleneck(nn.Module):
 
 class DPN(nn.Module):
     """
+    Dual Path Network
+
+    References:
+        https://arxiv.org/abs/1707.01629
+
     Example:
         >>> import torch
         >>> net = DPN92()
         >>> x = torch.randn(1, 3, 32, 32)
         >>> y = net(x)
-        >>> print(y)
+        >>> print(y.shape)
+        (1, 10)
 
     """
     def __init__(self, cfg):
