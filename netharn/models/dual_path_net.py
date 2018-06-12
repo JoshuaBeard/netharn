@@ -56,7 +56,7 @@ class DPN(nn.Module):
         >>> net = DPN92()
         >>> x = torch.randn(1, 3, 32, 32)
         >>> y = net(x)
-        >>> print(y.shape)
+        >>> print(tuple(y.shape))
         (1, 10)
 
     """
