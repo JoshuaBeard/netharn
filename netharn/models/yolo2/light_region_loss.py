@@ -390,9 +390,10 @@ class RegionLoss(BaseLossWithCudaState):
             tcoord[:, :, 0:2, :, :].fill_(0.0)
             # In the warmup phase we care about changing the coords to be
             # exactly the anchors if they don't predict anything, but the
-            # weight is only 0.1, set it to 0.1 / self.coord_scale because we
-            # will multiply by coord_scale later
-            coord_mask.fill_(0.1 / self.coord_scale)
+            # weight is only 0.1, set it to sqrt(0.1 / self.coord_scale)
+            # because we will multiply by coord_scale later and we are on the
+            # inside of the MSE.
+            coord_mask.fill_(torch.sqrt(0.1 / self.coord_scale))
 
         if gtempty:
             return coord_mask, conf_mask, cls_mask, tcoord, tconf, tcls

@@ -73,9 +73,9 @@ def train():
 
           model |  kuangliu  |    ours  |
     -------------------------------------
-    ResNet50    |    93.62%  |
+    ResNet50    |    93.62%  |  95.72%  |  <- how did that happen?
     DenseNet121 |    95.04%  |  94.47%  |
-    DPN92       |    95.16%  |
+    DPN92       |    95.16%  |  94.92%  |
 
      reports the following test accuracies for these models:
 
@@ -216,5 +216,6 @@ if __name__ == '__main__':
     CommandLine:
         python examples/cifar.py --gpu=0 --model=densenet121
         python examples/cifar.py --gpu=0 --model=resnet50
+        python examples/cifar.py --gpu=0 --model=dpn26
     """
     train()
