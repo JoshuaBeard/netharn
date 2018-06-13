@@ -20,7 +20,7 @@ class Bottleneck(nn.Module):
         self.conv1 = nn.Conv2d(in_planes, 4 * growth_rate,
                                kernel_size=1, bias=False)
         self.bn2 = nn.BatchNorm2d(4 * growth_rate)
-        self.conv2 = nn.Conv2d(4  * growth_rate, growth_rate,
+        self.conv2 = nn.Conv2d(4 * growth_rate, growth_rate,
                                kernel_size=3, padding=1, bias=False)
 
     def forward(self, x):
@@ -48,7 +48,8 @@ class DenseNet(nn.Module):
         >>> net = DenseNet([6, 12, 24, 16], growth_rate=12)
         >>> x = torch.randn(1, 3, 32, 32)
         >>> y = net(x)
-        >>> print(y)
+        >>> print(tuple(y.shape))
+        (1, 10)
     """
     def __init__(self, nblocks, growth_rate=12, reduction=0.5, num_classes=10):
         super(DenseNet, self).__init__()

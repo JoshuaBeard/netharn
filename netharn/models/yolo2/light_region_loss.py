@@ -8,6 +8,119 @@ Based off RegionLoss from Lightnet:
 Speedups
     [ ] - Preinitialize anchor tensors
 
+
+PJReddie's delta formulation:
+
+    # NOTES:
+        output coordinates -
+           x and y are offsets from anchor centers in Wout,Hout space.
+           w and h are in 01 coordinates
+
+
+        truth.{x, y, w, h} - true box in 01 coordinates
+        tx, ty, tw, th - true box in output coordinates
+
+    # Transform output coordinates to bbox pred
+    box get_region_box(float *x, float *biases, int n, int index, int i, int j,
+                       int w, int h, int stride)
+    {
+        # bbox pred is in 0 - 1 coordinates
+        box b;
+        b.x = (i + x[index + 0*stride]) / w;
+        b.y = (j + x[index + 1*stride]) / h;
+        b.w = exp(x[index + 2*stride]) * biases[2*n]   / w;
+        b.h = exp(x[index + 3*stride]) * biases[2*n+1] / h;
+        return b;
+    }
+
+
+    # VOC Config:
+    # https://github.com/pjreddie/darknet/blob/master/cfg/yolov2-voc.cfg
+
+    # WHEN SEEN < 128000 CASE
+    if(*(net.seen) < 12800){
+        box truth = {0};
+        truth.x = (i + .5)/l.w;
+        truth.y = (j + .5)/l.h;
+        truth.w = l.biases[2*n]/l.w;    # l.biases are anchor boxes
+        truth.h = l.biases[2*n+1]/l.h;
+        delta_region_box(
+            truth, l.output, l.biases, n, box_index, i, j, l.w, l.h,
+            delta=l.delta, scale=.01, stride=l.w*l.h);
+    }
+
+    # COORDINATE LOSS
+    # https://github.com/pjreddie/darknet/blob/master/src/region_layer.c#L254
+    # https://github.com/pjreddie/darknet/blob/master/src/region_layer.c#L86
+    # https://github.com/pjreddie/darknet/blob/master/src/region_layer.c#L293
+    float iou = delta_region_box(
+        truth, l.output, l.biases,
+        n=best_n, index=box_index, i=i, j=j, w=l.w, h=l.h, delta=l.delta,
+        scale=l.coord_scale * (2 - truth.w*truth.h), stride=l.w*l.h);
+    {
+        # https://github.com/pjreddie/darknet/blob/master/src/region_layer.c#L86
+
+        # CONVERT THE TRUTH BOX INTO OUTPUT COORD SPACE
+        float tx = (truth.x * l.w - i);
+        float ty = (truth.y * l.h - j);
+        float tw = log(truth.w * l.w / biases[2*n]);
+        float th = log(truth.h * l.h / biases[2*n + 1]);
+
+        delta[index + 0*stride] = scale * (tx - x[index + 0*stride]);
+        delta[index + 1*stride] = scale * (ty - x[index + 1*stride]);
+        delta[index + 2*stride] = scale * (tw - x[index + 2*stride]);
+        delta[index + 3*stride] = scale * (th - x[index + 3*stride]);
+    }
+
+
+    # CLASSIFICATION LOSS
+    # https://github.com/pjreddie/darknet/blob/master/src/region_layer.c#L112
+    # https://github.com/pjreddie/darknet/blob/master/src/region_layer.c#L314
+    delta_region_class(
+        output=l.output, delta=l.delta, index=class_index, class=class,
+        classes=l.classes, hier=l.softmax_tree, scale=l.class_scale,
+        stride=l.w*l.h, avg_cat=&avg_cat, tag=!l.softmax);
+
+
+    # OBJECTNESS LOSS: FOREGROUND
+    # THIS IS THE DEFAULT IOU LOSS FOR UNMATCHED OBJECTS
+    l.delta[obj_index] = l.noobject_scale * (0 - l.output[obj_index]);
+    if(l.background) {
+        # BG is 0
+        l.delta[obj_index] = l.noobject_scale * (1 - l.output[obj_index]);
+    }
+    if (best_iou > l.thresh) {
+        l.delta[obj_index] = 0;
+    }
+
+
+    # OBJECTNESS LOSS: BACKGROUND
+    l.delta[obj_index] = l.object_scale * (1 - l.output[obj_index]);
+    # rescore is 1 for VOC
+    if (l.rescore) {
+        l.delta[obj_index] = l.object_scale * (iou - l.output[obj_index]);
+    }
+    # background defaults to 0
+    if(l.background){
+        l.delta[obj_index] = l.object_scale * (0 - l.output[obj_index]);
+    }
+
+
+    IOU computation equivalent to:
+        * default all conf_mask to noobject_scale
+        * default all tconf to 0
+        * for any predictions with a best iou over a threshold (0.6)
+            - set its mask to 0 (equivalent to setting its delta to 0)
+        * for any matching pred / true positions:
+            - switch conf_mask to object_scale
+            - switch tconf to (iou if rescore else 1)
+
+Summary:
+    Coordinate Loss:
+        loss = coord_scale * (m * t - m * p) ** 2
+
+        * When seen < N, YOLO sets the scale to 0.01
+            - In our formulation, set m=sqrt(0.01 / coord_scale)
 """
 
 import math
@@ -20,6 +133,79 @@ from netharn import util
 from netharn.util import profiler
 
 __all__ = ['RegionLoss']
+
+
+def sympy_check_coordinate_loss():
+    import sympy
+    # s = coord_scale
+    # m = coord_mask
+    # p = coords
+    # t = tcoords
+    # tw, th = true width and height in normalized 01 coordinates
+    s, m, p, t, tw, th = sympy.symbols('s, m, p, t, tw, th')
+
+    # This is the general MSE loss forumlation for box coordinates We will
+    # always use this at the end of our computation (so we can efficiently
+    # broadcast the tensor). s, t, and p are always fixed constants.
+    # The main questsion is: how do we set m to match PJR's results?
+    loss_box = .5 * s * (m * t - m * p) ** 2
+
+    # Our formulation produces this negative derivative
+    our_grad = -1 * sympy.diff(loss_box, p)
+    print('our_grad = {!r}'.format(our_grad))
+
+    # PJReddie hard codes this negative derivative
+    pjr_grad = s * (t - p)
+
+    # Check how they differ
+    # (see what the mask must be assuming the scale is the same)
+    eq = sympy.Eq(pjr_grad, our_grad)
+    sympy.solve(eq)
+
+    # However, the scale is not the same in all cases PJReddie will change it
+    # Depending on certain cases.
+
+    # Coordinate Loss:
+    #     loss = coord_scale * (m * t - m * p) ** 2
+
+    #
+    # BACKGROUND LOW SEEN CASE:
+    # --------------
+    #   * When seen < N, YOLO sets the scale to 0.01
+    #       - In our formulation, set m=sqrt(0.01 / coord_scale)
+    #
+    #  * NOTE this loss is only applied to background predictions,
+    #       it is overridden if a a true object is assigned to the box
+    #       this is only a default case.
+    bgseen_pjr_grad = pjr_grad.subs({s: 0.01})
+    eq = sympy.Eq(bgseen_pjr_grad, our_grad)
+    bgseen_m_soln = sympy.solve(eq, m)[1]
+    print('when seen < N, set m = {}'.format(bgseen_m_soln))
+    # Check that this is what we expect
+    bgseen_m_expected = sympy.sqrt(0.01 / s)
+    assert (bgseen_m_soln - bgseen_m_expected) == 0
+
+    #
+    # BACKGROUND LOW SEEN CASE:
+    #     * when seen is high, the bbox loss in the background is just 0, we
+    #     can achive this by simply setting m = 0
+    assert our_grad.subs({'m': 0}) == 0
+
+    #
+    # FORGROUND NORMAL CASE
+    # -----------
+    # Whenever a pred box is assigned to a true object it gets this coordinate
+    # loss
+
+    # In the normal case pjr sets
+    # true box width and height
+    norm_pjr_grad = pjr_grad.subs({s: s * (2 - tw * th)})
+    eq = sympy.Eq(norm_pjr_grad, our_grad)
+    fgnorm_m_soln = sympy.solve(eq, m)[1]
+    print('fgnorm_m_soln = {!r}'.format(fgnorm_m_soln))
+    # Check that this is what we expect
+    fgnorm_m_expected = sympy.sqrt(2.0 - th * tw)
+    assert (fgnorm_m_soln - fgnorm_m_expected) == 0
 
 
 class BaseLossWithCudaState(torch.nn.modules.loss._Loss):
@@ -225,9 +411,6 @@ class RegionLoss(BaseLossWithCudaState):
                 pred_cxywh, target, nH, nW, seen=seen, gt_weights=gt_weights)
             coord_mask, conf_mask, cls_mask, tcoord, tconf, tcls = _tup
 
-            coord_mask = coord_mask.expand_as(tcoord)
-            conf_mask = conf_mask.sqrt()
-
             if nC > 1:
                 masked_tcls = tcls[cls_mask].view(-1).long()
 
@@ -245,32 +428,19 @@ class RegionLoss(BaseLossWithCudaState):
 
         # Compute losses
 
-        # corresponds to delta_region_box
-        """
-        Notes:
-            In the yolo paper the function used to compute loss is
-                loss = coord_scale * (true_x - pred_x) ** 2
-
-            The derivative of this function wrt true_x is
-                delta = coord_scale * 2 * (true_x - pred_x)
-
-            However, in the darknet code the derivative is computed as:
-                delta = scale * (true_x - pred_x);
-
-                where scale is:
-                    scale = l.coord_scale * (2 - truth.w * truth.h)
-
-            Therefore, to be compatible with the original code we add a
-            seemingly random multiply by .5 in our MSE computation so the torch
-            autodiff algorithm produces the same result as darknet.
-        """
-        loss_coord = self.coord_scale * 0.5 * self.coord_mse(
+        # Bounding Box Loss
+        # To be compatible with the original YOLO code we add a seemingly
+        # random multiply by .5 in our MSE computation so the torch autodiff
+        # algorithm produces the same result as darknet.
+        loss_coord = 0.5 * self.coord_scale * self.coord_mse(
             coord_mask * coord, coord_mask * tcoord) / nB
 
+        # Objectness Loss
         # object_scale and noobject_scale are incorporated in conf_mask.
         loss_conf = 0.5 * self.conf_mse(conf_mask * conf,
                                         conf_mask * tconf) / nB
 
+        # Class Loss
         if nC > 1 and masked_cls_probs.numel():
             loss_cls = self.class_scale * self.cls_critrion(masked_cls_probs,
                                                             masked_tcls) / nB
@@ -295,6 +465,9 @@ class RegionLoss(BaseLossWithCudaState):
         Args:
             pred_cxywh (Tensor):   shape [B * A * W * H, 4] in normalized cxywh format
             target (Tensor): shape [B, max(gtannots), 4]
+
+        CommandLine:
+            python ~/code/netharn/netharn/models/yolo2/light_region_loss.py RegionLoss.build_targets:1
 
         Example:
             >>> from netharn.models.yolo2.light_yolo import Yolo
@@ -373,7 +546,7 @@ class RegionLoss(BaseLossWithCudaState):
         cls_mask = torch.zeros(nB, nA, 1, nH, nW, device=device).byte()
 
         # Default conf_mask to the noobject_scale
-        conf_mask = conf_mask * self.noobject_scale
+        conf_mask.fill_(self.noobject_scale)
 
         # encourage the network to predict boxes centered on the grid cells by
         # setting the default target xs and ys to be (.5, .5) (i.e. the
@@ -381,17 +554,23 @@ class RegionLoss(BaseLossWithCudaState):
         # outputs are punished for not predicting center anchor locations ---
         # unless tcoord is overriden by a real groundtruth target later on.
         if seen < 12800:
+            # PJreddies version
+            # https://github.com/pjreddie/darknet/blob/master/src/region_layer.c#L254
+
             # By default encourage the network to predict no shift
             tcoord[:, :, 0:2, :, :].fill_(0.5)
             # By default encourage the network to predict no scale (in logspace)
             tcoord[:, :, 0:2, :, :].fill_(0.0)
             # In the warmup phase we care about changing the coords to be
             # exactly the anchors if they don't predict anything, but the
-            # weight is only 0.1, set it to 0.1 / self.coord_scale because we
-            # will multiply by coord_scale later
-            coord_mask.fill_(0.1 / self.coord_scale)
+            # weight is only 0.01, set it to 0.01 / self.coord_scale.
+            # Note we will apply the required sqrt later
+            coord_mask.fill_((0.01 / self.coord_scale))
 
         if gtempty:
+            coord_mask = coord_mask.sqrt()
+            conf_mask = conf_mask.sqrt()
+            coord_mask = coord_mask.expand_as(tcoord)
             return coord_mask, conf_mask, cls_mask, tcoord, tconf, tcls
 
         # Put this back into a non-flat view
@@ -418,12 +597,10 @@ class RegionLoss(BaseLossWithCudaState):
             # If unspecified give each groundtruth a default weight of 1
             gt_weights = torch.ones_like(target[..., 0], device=device)
 
-        # Undocumented darknet detail: multiply coord weight by two
-        # minus the area of the true box in normalized coordinates.
-        # the square root is because the weight is multiplied on the
-        # inside of the MSE. We get the right loss via:
-        # diferentiate of s * .5 * (sqrt(w) * t - sqrt(w) * x) ** 2 wrt
-        gt_coord_weights = (gt_weights * (2.0 - gt_boxes_norm.area[..., 0])).sqrt()
+        # Undocumented darknet detail: multiply coord weight by two minus the
+        # area of the true box in normalized coordinates.  the square root is
+        # because the weight.
+        gt_coord_weights = (gt_weights * (2.0 - gt_boxes_norm.area[..., 0]))
 
         # Loop over ground_truths and construct tensors
         for bx in range(nB):
@@ -433,29 +610,35 @@ class RegionLoss(BaseLossWithCudaState):
                 continue
 
             # Batch ground truth
-            batch_rel_gt_boxes = rel_gt_boxes[bx][flags]
-            cur_gt_boxes = gt_boxes[bx][flags]
+            batch_rel_gt_boxes = rel_gt_boxes[bx, flags]
+            cur_gt_boxes = gt_boxes[bx, flags]
+            cur_true_is = true_is[bx, flags]
+            cur_true_js = true_js[bx, flags]
+            cur_true_weights = gt_weights[bx, flags]
+            cur_true_coord_weights = gt_coord_weights[bx, flags]
 
             # Batch predictions
             cur_pred_boxes = pred_boxes[bx]
 
             # Assign groundtruth boxes to anchor boxes
             anchor_ious = self.rel_anchors_boxes.ious(batch_rel_gt_boxes, bias=0)
-            # _, best_ns = anchor_ious.max(dim=0)
-            _, best_anchor_idxs = anchor_ious.max(dim=0)
+            _, best_anchor_idxs = anchor_ious.max(dim=0)  # best_ns in YOLO
 
             # Assign groundtruth boxes to predicted boxes
             ious = cur_pred_boxes.ious(cur_gt_boxes, bias=0)
             cur_ious, _ = ious.max(dim=-1)
 
-            # Set confidence mask of matching detections to 0
+            # Set loss to zero for any predicted boxes that had a high iou with
+            # a groundtruth target (we wont punish them for not being
+            # background), One of these will be selected as the best and be
+            # punished for not predicting the groundtruth value.
             conf_mask[bx].view(-1)[cur_ious.view(-1) > self.thresh] = 0
 
             for t in range(cur_gt_boxes.shape[0]):
                 gt_box_ = cur_gt_boxes[t]
-                # coord weights are slightly different than other weights
-                weight = gt_weights[bx, t]
-                coord_weight = gt_coord_weights[bx, t]
+                weight = cur_true_weights[t]
+                # coord weights incorporate weight and true box area
+                coord_weight = cur_true_coord_weights[t]
 
                 # The assigned (best) anchor index
                 ax = best_anchor_idxs[t].item()
@@ -463,8 +646,8 @@ class RegionLoss(BaseLossWithCudaState):
 
                 # Compute this ground truth's grid cell
                 gx, gy, gw, gh = gt_box_.data
-                gi = true_is[bx, t].item()
-                gj = true_js[bx, t].item()
+                gi = cur_true_is[t].item()
+                gj = cur_true_js[t].item()
 
                 # The prediction will be punished if it does not match this true box
                 # pred_box_ = cur_pred_boxes[best_n, gj, gi]
@@ -473,11 +656,14 @@ class RegionLoss(BaseLossWithCudaState):
                 # corresponding to the assigned anchor and grid cell
                 iou = ious[ax, gj, gi, t].item()
 
-                # Mark that we will care about this prediction with some weight
-
-                coord_weight = (weight * (2 - gw * gh / (nW * nH))) ** .5
+                # Mark that we will care about the predicted box with some weight
                 coord_mask[bx, ax, 0, gj, gi] = coord_weight
+
+                # PJReddie delta_region_class:
+                # https://github.com/pjreddie/darknet/blob/master/src/region_layer.c#L112
+                # https://github.com/pjreddie/darknet/blob/master/src/region_layer.c#L314
                 cls_mask[bx, ax, 0, gj, gi] = int(weight > .5)
+
                 conf_mask[bx, ax, 0, gj, gi] = self.object_scale * weight
 
                 # The true box is converted into coordinates comparable to the
@@ -490,8 +676,18 @@ class RegionLoss(BaseLossWithCudaState):
                 tcoord[bx, ax, 1, gj, gi] = gy - gj
                 tcoord[bx, ax, 2, gj, gi] = math.log(gw / anchor_w)
                 tcoord[bx, ax, 3, gj, gi] = math.log(gh / anchor_h)
-                tconf[bx, ax, 0, gj, gi] = iou
+                tconf[bx, ax, 0, gj, gi] = iou  # if rescore else 1
                 tcls[bx, ax, 0, gj, gi] = target[bx, t, 0]
+
+        # because coord and conf masks are witin this MSE we need to sqrt them
+        coord_mask = coord_mask.sqrt()
+        conf_mask = conf_mask.sqrt()
+        coord_mask = coord_mask.expand_as(tcoord)
+
+        # masked_tcls = tcls[cls_mask].view(-1).long()
+        # cls_probs_mask = cls_mask.reshape(nB, nA, nH, nW, 1).repeat(1, 1, 1, 1, nC)
+        # cls_probs_mask = Variable(cls_probs_mask, requires_grad=False)
+        # masked_cls_probs = cls_probs[cls_probs_mask].view(-1, nC)
 
         return coord_mask, conf_mask, cls_mask, tcoord, tconf, tcls
 
