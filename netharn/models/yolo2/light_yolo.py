@@ -68,6 +68,7 @@ class Reorg(nn.Module):
         return '{} (stride={}, darknet_compatible_mode={})'.format(
             self.__class__.__name__, self.stride, self.darknet)
 
+
     def forward(self, x):
         assert(x.data.dim() == 4)
         B = x.data.size(0)
