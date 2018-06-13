@@ -946,6 +946,8 @@ if __name__ == '__main__':
     CommandLine:
         srun -c 4 -p priority --gres=gpu:1 \
             python ~/code/netharn/netharn/examples/yolo_voc.py train --gpu=0 --batch_size=16 --nice=rescaled --lr=0.001 --bstep=4 --workers=4
+
+        python ~/code/netharn/netharn/examples/yolo_voc.py train --gpu=0 --batch_size=16 --nice=new_loss_v2 --lr=0.001 --bstep=4 --workers=4
     """
     import xdoctest
     xdoctest.doctest_module(__file__)

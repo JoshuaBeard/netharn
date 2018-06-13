@@ -466,6 +466,9 @@ class RegionLoss(BaseLossWithCudaState):
             pred_cxywh (Tensor):   shape [B * A * W * H, 4] in normalized cxywh format
             target (Tensor): shape [B, max(gtannots), 4]
 
+        CommandLine:
+            python ~/code/netharn/netharn/models/yolo2/light_region_loss.py RegionLoss.build_targets:1
+
         Example:
             >>> from netharn.models.yolo2.light_yolo import Yolo
             >>> from netharn.models.yolo2.light_region_loss import RegionLoss
@@ -543,7 +546,7 @@ class RegionLoss(BaseLossWithCudaState):
         cls_mask = torch.zeros(nB, nA, 1, nH, nW, device=device).byte()
 
         # Default conf_mask to the noobject_scale
-        conf_mask = conf_mask * self.noobject_scale
+        conf_mask.fill_(self.noobject_scale)
 
         # encourage the network to predict boxes centered on the grid cells by
         # setting the default target xs and ys to be (.5, .5) (i.e. the
@@ -560,12 +563,14 @@ class RegionLoss(BaseLossWithCudaState):
             tcoord[:, :, 0:2, :, :].fill_(0.0)
             # In the warmup phase we care about changing the coords to be
             # exactly the anchors if they don't predict anything, but the
-            # weight is only 0.01, set it to sqrt(0.01 / self.coord_scale)
-            # because we will multiply by coord_scale later and we are on the
-            # inside of the MSE.
-            coord_mask.fill_(torch.sqrt(0.01 / self.coord_scale))
+            # weight is only 0.01, set it to 0.01 / self.coord_scale.
+            # Note we will apply the required sqrt later
+            coord_mask.fill_((0.01 / self.coord_scale))
 
         if gtempty:
+            coord_mask = coord_mask.sqrt()
+            conf_mask = conf_mask.sqrt()
+            coord_mask = coord_mask.expand_as(tcoord)
             return coord_mask, conf_mask, cls_mask, tcoord, tconf, tcls
 
         # Put this back into a non-flat view
@@ -603,18 +608,21 @@ class RegionLoss(BaseLossWithCudaState):
             flags = gt_isvalid[bx]
             if not np.any(flags):
                 continue
+            import utool
+            utool.embed()
 
             # Batch ground truth
-            batch_rel_gt_boxes = rel_gt_boxes[bx][flags]
-            cur_gt_boxes = gt_boxes[bx][flags]
+            batch_rel_gt_boxes = rel_gt_boxes[bx, flags]
+            cur_gt_boxes = gt_boxes[bx, flags]
+            cur_true_is = true_is[bx]
+            cur_true_js = true_js[bx]
 
             # Batch predictions
             cur_pred_boxes = pred_boxes[bx]
 
             # Assign groundtruth boxes to anchor boxes
             anchor_ious = self.rel_anchors_boxes.ious(batch_rel_gt_boxes, bias=0)
-            # _, best_ns = anchor_ious.max(dim=0)
-            _, best_anchor_idxs = anchor_ious.max(dim=0)
+            _, best_anchor_idxs = anchor_ious.max(dim=0)  # best_ns in YOLO
 
             # Assign groundtruth boxes to predicted boxes
             ious = cur_pred_boxes.ious(cur_gt_boxes, bias=0)
@@ -638,8 +646,8 @@ class RegionLoss(BaseLossWithCudaState):
 
                 # Compute this ground truth's grid cell
                 gx, gy, gw, gh = gt_box_.data
-                gi = true_is[bx, t].item()
-                gj = true_js[bx, t].item()
+                gi = cur_true_is[t].item()
+                gj = cur_true_js[t].item()
 
                 # The prediction will be punished if it does not match this true box
                 # pred_box_ = cur_pred_boxes[best_n, gj, gi]
