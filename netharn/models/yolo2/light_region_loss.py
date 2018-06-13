@@ -608,14 +608,14 @@ class RegionLoss(BaseLossWithCudaState):
             flags = gt_isvalid[bx]
             if not np.any(flags):
                 continue
-            import utool
-            utool.embed()
 
             # Batch ground truth
             batch_rel_gt_boxes = rel_gt_boxes[bx, flags]
             cur_gt_boxes = gt_boxes[bx, flags]
-            cur_true_is = true_is[bx]
-            cur_true_js = true_js[bx]
+            cur_true_is = true_is[bx, flags]
+            cur_true_js = true_js[bx, flags]
+            cur_true_weights = gt_weights[bx, flags]
+            cur_true_coord_weights = gt_coord_weights[bx, flags]
 
             # Batch predictions
             cur_pred_boxes = pred_boxes[bx]
@@ -636,9 +636,9 @@ class RegionLoss(BaseLossWithCudaState):
 
             for t in range(cur_gt_boxes.shape[0]):
                 gt_box_ = cur_gt_boxes[t]
-                weight = gt_weights[bx, t]
+                weight = cur_true_weights[t]
                 # coord weights incorporate weight and true box area
-                coord_weight = gt_coord_weights[bx, t]
+                coord_weight = cur_true_coord_weights[t]
 
                 # The assigned (best) anchor index
                 ax = best_anchor_idxs[t].item()
