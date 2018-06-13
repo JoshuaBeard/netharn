@@ -221,8 +221,8 @@ class Yolo(nn.Module):
         Shape of the output produced by this network
         """
         nB, c, inH, inW = input_shape
-        outH = inH / self.factor
-        outW = inW / self.factor
+        outH = inH / self.reduction
+        outW = inW / self.reduction
         nA = len(self.anchors)
         nC = self.num_classes
         return (nB, nA, 5 + nC, outH, outW)
