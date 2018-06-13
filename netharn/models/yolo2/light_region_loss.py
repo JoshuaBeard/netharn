@@ -115,15 +115,12 @@ PJReddie's delta formulation:
             - switch conf_mask to object_scale
             - switch tconf to (iou if rescore else 1)
 
-
 Summary:
-
     Coordinate Loss:
         loss = coord_scale * (m * t - m * p) ** 2
 
         * When seen < N, YOLO sets the scale to 0.01
             - In our formulation, set m=sqrt(0.01 / coord_scale)
-
 """
 
 import math
