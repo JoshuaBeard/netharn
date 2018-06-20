@@ -202,7 +202,7 @@ class Yolo(nn.Module):
             # Sequence 2 : input = sequence0
             OrderedDict([
                 ('26_convbatch',    Conv2dBatchLeaky(512, 64, 1, 1, 0)),
-                ('27_reorg',        Reorg(2)),
+                ('27_reorg',       Reorg(2)),
             ]),
 
             # Sequence 3 : input = sequence2 + sequence1
